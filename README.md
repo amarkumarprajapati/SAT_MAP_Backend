@@ -59,7 +59,36 @@ FIRMS_API_KEY=
 
 ## Running the Server
 
-### Option A: Using `run.py` (Recommended)
+### Option A: Using Docker Compose (Recommended for Containerized Run)
+Make sure Docker Desktop is installed and running.
+
+```bash
+# 1. Build and start the container in the background
+docker compose up -d --build
+
+# 2. View real-time logs
+docker compose logs -f
+
+# 3. Check health and container status
+docker compose ps
+
+# 4. Stop the container
+docker compose down
+```
+
+### Option B: Using Standalone Docker
+```bash
+# Build the image
+docker build -t sat-map-backend .
+
+# Run the container
+docker run -d --name sat_map_backend -p 8000:8000 --env-file .env sat-map-backend
+
+# Stop and remove
+docker stop sat_map_backend && docker rm sat_map_backend
+```
+
+### Option C: Using `run.py` (Local Python)
 ```powershell
 # Standard run
 python run.py
@@ -69,7 +98,7 @@ python run.py --reload
 ```
 *(If using the Windows Python launcher: `py -3.10 run.py --reload`)*
 
-### Option B: Using `uvicorn` Directly
+### Option D: Using `uvicorn` Directly
 ```powershell
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```

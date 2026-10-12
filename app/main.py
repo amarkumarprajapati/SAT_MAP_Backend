@@ -51,19 +51,7 @@ async def health_check():
         "status": "connected",
         "service": "LTmap FastAPI Backend",
         "version": "1.0.0",
-        "base_url": settings.BASE_URL,
-        "api_prefix": settings.API_PREFIX,
-        "uptime_seconds": round(time.time() - start_time, 2),
-        "timestamp": int(time.time() * 1000),
-        "endpoints": {
-            "health": Endpoints.API_HEALTH,
-            "flights": Endpoints.FLIGHTS,
-            "maritime": Endpoints.MARITIME,
-            "satellites": Endpoints.SATELLITES,
-            "satellite_orbit": Endpoints.SATELLITES_ORBIT,
-            "region_dossier": Endpoints.REGION_DOSSIER,
-            "stats": Endpoints.STATS,
-        },
+        "base_url": settings.BASE_URL
     }
 
 
