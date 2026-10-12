@@ -1,6 +1,5 @@
 from .config import settings
 
-# Base API URL & Prefix
 BASE_URL = settings.BASE_URL
 API_PREFIX = settings.API_PREFIX
 

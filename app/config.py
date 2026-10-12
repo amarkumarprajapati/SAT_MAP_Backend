@@ -3,7 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-# Load .env from backend root
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
@@ -30,5 +30,5 @@ class Settings(BaseModel):
 
 settings = Settings()
 
-# Ensure cache directory exists
+
 Path(settings.CACHE_DIR).mkdir(parents=True, exist_ok=True)
