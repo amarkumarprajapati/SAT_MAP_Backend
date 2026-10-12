@@ -1,0 +1,239 @@
+{
+  "info": {
+    "_postman_id": "7f8b9e10-c12a-43d5-91e8-ltmap-backend",
+    "name": "LTmap Intelligence Backend API",
+    "description": "Postman Collection for the LTmap FastAPI Backend. Contains all production endpoints for OSINT, satellite propagation, military flights, and maritime vessel tracking.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "System & Overview",
+      "item": [
+        {
+          "name": "Health Check & Service Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "health"]
+            },
+            "description": "Returns backend connection status, uptime, and the full registry of available endpoints."
+          },
+          "response": []
+        },
+        {
+          "name": "Platform Summary Stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stats"]
+            },
+            "description": "Aggregates real-time count of active flights, satellites, ships, and global ports."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Air Domain (Flights)",
+      "item": [
+        {
+          "name": "Live Military Flights & Jamming",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/flights",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "flights"]
+            },
+            "description": "Fetches live military aircraft tracking data from adsb.fi with aircraft type classification and GPS jamming heatmap clusters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Maritime Domain (AIS)",
+      "item": [
+        {
+          "name": "Live Maritime Vessels & Ports",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/maritime",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "maritime"]
+            },
+            "description": "Returns live AIS ship positions, global container & energy ports with congestion indicators, and strategic maritime chokepoints."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Space Domain (Satellites & Orbit)",
+      "item": [
+        {
+          "name": "Active Satellites (SGP4 Propagation)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/satellites",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "satellites"],
+              "query": [
+                {
+                  "key": "_cb",
+                  "value": "1710000000",
+                  "description": "Optional cache-busting timestamp",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Returns real-time 3D coordinates (latitude, longitude, altitude) for classified satellites (military, navigation, earth observation) computed via SGP4."
+          },
+          "response": []
+        },
+        {
+          "name": "Satellite Orbit Track (Full Revolution)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/satellites/orbit?id=25544",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "satellites", "orbit"],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "25544",
+                  "description": "NORAD Catalog ID (e.g. 25544 for ISS)"
+                },
+                {
+                  "key": "t",
+                  "value": "",
+                  "description": "Optional anchor timestamp in ms",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Computes a full 360-degree orbital path split at the antimeridian for map LineString rendering."
+          },
+          "response": []
+        },
+        {
+          "name": "Satellite Live Telemetry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/satellites/orbit?id=25544&live=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "satellites", "orbit"],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "25544",
+                  "description": "NORAD Catalog ID"
+                },
+                {
+                  "key": "live",
+                  "value": "1",
+                  "description": "Flag for instant velocity, heading, and geodetic altitude"
+                }
+              ]
+            },
+            "description": "Retrieves immediate inertial speed (km/s), ground-track heading (deg), and altitude for an individual satellite."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Geospatial & OSINT Dossier",
+      "item": [
+        {
+          "name": "Region Dossier (Coordinates Intelligence)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/region-dossier?lat=28.6139&lng=77.2090",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "region-dossier"],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "28.6139",
+                  "description": "Latitude coordinate"
+                },
+                {
+                  "key": "lng",
+                  "value": "77.2090",
+                  "description": "Longitude coordinate"
+                }
+              ]
+            },
+            "description": "Combines Photon reverse geocoding, Wikidata country intelligence, and Wikipedia summary for any global coordinate."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
