@@ -19,11 +19,12 @@ class Settings(BaseModel):
     CACHE_DIR: str = os.getenv("CACHE_DIR", str(Path(__file__).resolve().parent.parent / ".cache"))
 
     CORS_ORIGINS: list[str] = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "*",
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000",
+        ).split(",")
+        if origin.strip()
     ]
 
 

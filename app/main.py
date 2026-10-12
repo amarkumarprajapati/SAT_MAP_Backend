@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .endpoints import Endpoints
@@ -29,41 +30,14 @@ app = FastAPI(
 )
 
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+class PrivateNetworkCORSMiddleware(CORSMiddleware):
+    """Standard CORS handling with Chrome's localhost PNA preflight support."""
 
-
-class RobustCORSMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("origin")
-        
-        if request.method == "OPTIONS":
-            res = Response(status_code=204)
-            if origin:
-                res.headers["Access-Control-Allow-Origin"] = origin
-                res.headers["Access-Control-Allow-Credentials"] = "true"
-            else:
-                res.headers["Access-Control-Allow-Origin"] = "*"
-            res.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"
-            res.headers["Access-Control-Allow-Headers"] = request.headers.get("access-control-request-headers", "*")
-            res.headers["Access-Control-Allow-Private-Network"] = "true"
-            res.headers["Access-Control-Max-Age"] = "86400"
-            return res
-
-        response = await call_next(request)
-        if origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-        else:
-            response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    def preflight_response(self, request_headers):
+        response = super().preflight_response(request_headers)
+        if request_headers.get("access-control-request-private-network") == "true":
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
         return response
-
-
-app.add_middleware(RobustCORSMiddleware)
 
 start_time = time.time()
 
@@ -99,3 +73,14 @@ app.include_router(flights.router)
 app.include_router(maritime.router)
 app.include_router(region_dossier.router)
 app.include_router(stats.router)
+
+
+app = PrivateNetworkCORSMiddleware(
+    app,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=86400,
+)
