@@ -1,6 +1,10 @@
 import time
 import asyncio
+import logging
 from contextlib import asynccontextmanager
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+logger = logging.getLogger("ltmap.main")
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware

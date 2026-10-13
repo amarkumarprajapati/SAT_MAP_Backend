@@ -24,21 +24,58 @@ router = APIRouter(prefix="/api/maritime", tags=["maritime"])
 
 
 @router.websocket("/stream")
-async def maritime_stream(websocket: WebSocket):
-    """Send an initial ship snapshot, then stream each AIS position update."""
+async def maritime_stream(websocket: WebSocket, mmsi: str | None = None):
+    """
+    Focused AIS stream.
+    Supports on-demand vessel tracking so client is not overloaded with 20,000 ships.
+    Clients can send {"action": "track", "mmsi": ...} or {"action": "untrack"}.
+    """
     await websocket.accept()
     queue = ais_stream.subscribe_ships()
+    tracked_mmsi: str | None = str(mmsi) if mmsi else None
+
+    # If MMSI was requested on connect, send its current snapshot immediately
+    if tracked_mmsi:
+        current = await ais_stream.get_ship(tracked_mmsi)
+        if current:
+            await websocket.send_json({"type": "ship_update", "ship": current})
+
+    async def incoming_listener():
+        nonlocal tracked_mmsi
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    msg = json.loads(data)
+                    action = msg.get("action")
+                    if action == "track":
+                        target = msg.get("mmsi")
+                        if target:
+                            tracked_mmsi = str(target)
+                            current = await ais_stream.get_ship(tracked_mmsi)
+                            if current:
+                                await websocket.send_json({"type": "ship_update", "ship": current})
+                    elif action == "untrack":
+                        tracked_mmsi = None
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    listener_task = asyncio.create_task(incoming_listener())
+
     try:
-        await websocket.send_json({"type": "snapshot", "ships": await ais_stream.get_ships()})
         while True:
-            try:
-                ship = await asyncio.wait_for(queue.get(), timeout=25)
-                await websocket.send_json({"type": "ship_update", "ship": ship})
-            except asyncio.TimeoutError:
-                await websocket.send_json({"type": "snapshot", "ships": await ais_stream.get_ships()})
+            ship = await queue.get()
+            # Only broadcast if this ship matches the tracked MMSI
+            if tracked_mmsi:
+                ship_mmsi = str(ship.get("mmsi") or ship.get("id") or "")
+                if ship_mmsi == tracked_mmsi:
+                    await websocket.send_json({"type": "ship_update", "ship": ship})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
+        listener_task.cancel()
         ais_stream.unsubscribe_ships(queue)
 
 # ── Static Data ─────────────────────────────────────────────────────────────────
@@ -193,6 +230,10 @@ async def _build_snapshot() -> dict:
             "risk": risk,
         })
 
+    cargo_count = sum(1 for s in ships if s.get("type") in ("cargo", "container") or not s.get("type"))
+    tanker_count = sum(1 for s in ships if s.get("type") == "tanker")
+    military_count = sum(1 for s in ships if s.get("type") == "military")
+
     return {
         "ports": dynamic_ports,
         "chokepoints": dynamic_chokepoints,
@@ -200,22 +241,45 @@ async def _build_snapshot() -> dict:
         "total_ports": len(dynamic_ports),
         "total_chokepoints": len(dynamic_chokepoints),
         "total_ships": len(ships),
+        "category_counts": {
+            "cargo": cargo_count,
+            "tanker": tanker_count,
+            "military": military_count,
+        },
         "timestamp": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
     }
 
 
 @router.get("")
-async def get_maritime_data():
-    """Fetch live AIS maritime data: vessels, ports, and chokepoints."""
+async def get_maritime_data(type: str | None = None):
+    """Fetch live AIS maritime data: vessels, ports, and chokepoints.
+    Optionally filter ships by category: 'container' / 'cargo', 'tanker', 'military', 'all'.
+    """
     global _snapshot_cache, _snapshot_time
 
     now = time.time()
     if _snapshot_cache and now - _snapshot_time < SNAPSHOT_TTL:
-        body = json.dumps(_snapshot_cache)
+        snapshot = _snapshot_cache
     else:
         snapshot = await _build_snapshot()
         _snapshot_cache = snapshot
         _snapshot_time = now
+
+    if type and type.lower() != "all":
+        req_type = type.lower()
+        if req_type in ("container", "cargo"):
+            filtered_ships = [s for s in snapshot["ships"] if s.get("type") in ("cargo", "container") or not s.get("type")]
+        else:
+            filtered_ships = [s for s in snapshot["ships"] if s.get("type") == req_type]
+
+        response_data = {
+            **snapshot,
+            "ships": filtered_ships,
+            "total_ships": len(filtered_ships),
+            "filter": req_type,
+        }
+        body = json.dumps(response_data)
+    else:
         body = json.dumps(snapshot)
 
     max_age = int(SNAPSHOT_TTL)
