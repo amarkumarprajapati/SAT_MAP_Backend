@@ -8,16 +8,17 @@ from starlette.middleware.cors import CORSMiddleware
 from .config import settings
 from .endpoints import Endpoints
 from .routers import satellites, flights, maritime, stats, region_dossier
-from .services import ais_stream, tle_cache
+from .services import ais_stream, digitraffic_ais, tle_cache
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.AIS_API_KEY:
-        await ais_stream.start()
+    await ais_stream.start()
+    await digitraffic_ais.start()
     asyncio.create_task(tle_cache.refresh())
     yield
     await ais_stream.stop()
+    await digitraffic_ais.stop()
 
 
 app = FastAPI(
@@ -62,10 +63,9 @@ app.include_router(maritime.router)
 app.include_router(region_dossier.router)
 app.include_router(stats.router)
 
-
-app = PrivateNetworkCORSMiddleware(
-    app,
-    allow_origins=settings.CORS_ORIGINS,
+app.add_middleware(
+    PrivateNetworkCORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else ["*"],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],

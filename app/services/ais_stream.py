@@ -23,6 +23,7 @@ logger = logging.getLogger("ltmap.ais")
 # ── Ship Storage ────────────────────────────────────────────────────────────────
 
 _ships: dict[int, dict[str, Any]] = {}
+_ship_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
 _lock = asyncio.Lock()
 _ws_task: asyncio.Task | None = None
 _running = False
@@ -49,6 +50,13 @@ async def _handle_message(raw: str) -> None:
     except json.JSONDecodeError:
         return
 
+    # AISStream sends subscription/authentication errors as JSON messages
+    # without MetaData.MMSI. Log them instead of silently discarding them as
+    # malformed vessel updates, which made a dead feed look like an empty sea.
+    if parsed.get("error"):
+        logger.error("AIS provider rejected the stream: %s", parsed.get("error"))
+        return
+
     mmsi = parsed.get("MetaData", {}).get("MMSI")
     if not mmsi:
         return
@@ -65,10 +73,19 @@ async def _handle_message(raw: str) -> None:
         if msg_type == "PositionReport":
             report = parsed.get("Message", {}).get("PositionReport", {})
             if report:
-                existing["lat"] = report.get("Latitude")
-                existing["lng"] = report.get("Longitude")
+                lat = report.get("Latitude")
+                lng = report.get("Longitude")
+                if lat is not None and lng is not None:
+                    if existing.get("firstSeenLat") is None or existing.get("firstSeenLng") is None:
+                        existing["firstSeenLat"] = lat
+                        existing["firstSeenLng"] = lng
+                        existing["firstSeenAt"] = time.time()
+                    existing["lat"] = lat
+                    existing["lng"] = lng
                 existing["speed"] = report.get("Sog")
-                existing["heading"] = report.get("TrueHeading") or report.get("Cog")
+                true_heading = report.get("TrueHeading")
+                course = report.get("Cog")
+                existing["heading"] = true_heading if true_heading is not None and 0 <= true_heading < 360 else course
                 existing["timestamp"] = time.time()
 
         elif msg_type == "ShipStaticData":
@@ -81,13 +98,45 @@ async def _handle_message(raw: str) -> None:
                 existing["type"] = _get_ship_type(static.get("Type", 0))
 
         # Only store if we have a position
-        if existing.get("lat") and existing.get("lng"):
+        if existing.get("lat") is not None and existing.get("lng") is not None:
             _ships[mmsi] = existing
+            update = existing.copy()
+            for queue in tuple(_ship_subscribers):
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                try:
+                    queue.put_nowait(update)
+                except asyncio.QueueFull:
+                    pass
 
         # Evict oldest if too many
         if len(_ships) > MAX_SHIPS:
             oldest = next(iter(_ships))
             _ships.pop(oldest, None)
+
+
+async def ingest_external_ship(mmsi: int, fields: dict[str, Any]) -> None:
+    """Merge a position or metadata update from a secondary AIS provider."""
+    async with _lock:
+        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "timestamp": time.time()})
+        existing.update({key: value for key, value in fields.items() if value is not None})
+        if existing.get("lat") is not None and existing.get("lng") is not None:
+            existing["timestamp"] = time.time()
+            _ships[mmsi] = existing
+            update = existing.copy()
+            for queue in tuple(_ship_subscribers):
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                try:
+                    queue.put_nowait(update)
+                except asyncio.QueueFull:
+                    pass
 
 
 async def _connect_loop() -> None:
@@ -122,7 +171,6 @@ async def _connect_loop() -> None:
                         [[22.0, 118.0], [26.0, 121.0]],
                         [[50.0, 0.0], [53.0, 5.0]],
                         [[33.0, -119.0], [34.5, -117.0]],
-                        [[-90, -180], [90, 180]],
                     ],
                     "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
                 }
@@ -134,8 +182,12 @@ async def _connect_loop() -> None:
                         break
                     await _handle_message(str(message))
 
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("AIS WebSocket closed, reconnecting in 5s...")
+        except websockets.exceptions.ConnectionClosed as exc:
+            logger.warning(
+                "AIS WebSocket closed (code=%s, reason=%s), reconnecting in 5s...",
+                exc.code,
+                exc.reason or "no reason supplied",
+            )
         except Exception as exc:
             logger.warning("AIS WebSocket error: %s, reconnecting in 5s...", exc)
 
@@ -178,6 +230,17 @@ async def get_ships() -> list[dict[str, Any]]:
         for k in stale_keys:
             del _ships[k]
         return list(_ships.values())
+
+
+def subscribe_ships() -> asyncio.Queue[dict[str, Any]]:
+    """Subscribe to incremental AIS position updates."""
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=2048)
+    _ship_subscribers.add(queue)
+    return queue
+
+
+def unsubscribe_ships(queue: asyncio.Queue[dict[str, Any]]) -> None:
+    _ship_subscribers.discard(queue)
 
 
 def ship_count() -> int:

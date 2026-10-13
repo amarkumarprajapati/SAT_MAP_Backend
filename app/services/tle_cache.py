@@ -1,12 +1,3 @@
-"""
-LTmap — TLE (Two-Line Element) Cache Manager
-
-Fetches satellite TLE data from CelesTrak and SatNOGS, maintains an
-in-memory + disk cache. Ported from satellites/route.ts caching logic.
-
-The cache is shared by the satellites and orbit routers.
-"""
-
 import asyncio
 import json
 import logging
@@ -25,13 +16,10 @@ CT = "https://celestrak.org/NORAD/elements/gp.php?GROUP="
 FMT = "&FORMAT=tle"
 
 CELESTRAK_GROUPS = [
-    # Navigation
     f"{CT}gps-ops{FMT}", f"{CT}glonass-operational{FMT}",
     f"{CT}galileo{FMT}", f"{CT}beidou{FMT}",
-    # Weather & Earth observation
     f"{CT}weather{FMT}", f"{CT}resource{FMT}", f"{CT}planet{FMT}",
     f"{CT}goes{FMT}", f"{CT}argos{FMT}", f"{CT}dmc{FMT}", f"{CT}spire{FMT}",
-    # Military / Government
     f"{CT}military{FMT}", f"{CT}radar{FMT}",
 ]
 
@@ -136,16 +124,16 @@ async def refresh(force: bool = False) -> tuple[list[dict[str, str]], str]:
     need_refresh = (
         force
         or len(_satellites) == 0
-        or len(_satellites) < 5000
+        or (len(_satellites) < 500 and now - _cache_time > 300)
         or now - _cache_time > _CACHE_TTL
     )
 
-    if not need_refresh:
+    if not need_refresh and len(_satellites) > 0:
         return _satellites, "memory-cache"
 
     async with _lock:
         # Double-check after acquiring lock
-        if not force and len(_satellites) >= 5000 and time.time() - _cache_time <= _CACHE_TTL:
+        if not force and len(_satellites) >= 500 and time.time() - _cache_time <= _CACHE_TTL:
             return _satellites, "memory-cache"
 
         # Fetch all CelesTrak groups in parallel

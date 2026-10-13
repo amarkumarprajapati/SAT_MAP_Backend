@@ -6,13 +6,14 @@ ports with congestion analysis, and strategic chokepoints with live traffic
 counts. Ported from maritime/route.ts.
 """
 
+import asyncio
 import math
 import time
 import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from ..services import ais_stream
@@ -20,6 +21,25 @@ from ..services import ais_stream
 logger = logging.getLogger("ltmap.maritime")
 
 router = APIRouter(prefix="/api/maritime", tags=["maritime"])
+
+
+@router.websocket("/stream")
+async def maritime_stream(websocket: WebSocket):
+    """Send an initial ship snapshot, then stream each AIS position update."""
+    await websocket.accept()
+    queue = ais_stream.subscribe_ships()
+    try:
+        await websocket.send_json({"type": "snapshot", "ships": await ais_stream.get_ships()})
+        while True:
+            try:
+                ship = await asyncio.wait_for(queue.get(), timeout=25)
+                await websocket.send_json({"type": "ship_update", "ship": ship})
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "snapshot", "ships": await ais_stream.get_ships()})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        ais_stream.unsubscribe_ships(queue)
 
 # ── Static Data ─────────────────────────────────────────────────────────────────
 PORTS = [
