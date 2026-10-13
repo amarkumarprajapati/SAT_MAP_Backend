@@ -38,16 +38,19 @@ def _get_ship_type(type_code: int) -> str:
         return "tanker"
     if 70 <= type_code <= 79:
         return "cargo"
-    if type_code == 35:
+    if type_code in (35, 55, 50, 51):
         return "military"
     return "cargo"
 
 
-async def _handle_message(raw: str) -> None:
+async def _handle_message(raw: str | bytes) -> None:
     """Process one AIS message from the WebSocket stream."""
     try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
+    except Exception as e:
+        logger.debug("Failed to decode AIS message: %s", e)
         return
 
     # AISStream sends subscription/authentication errors as JSON messages
@@ -62,11 +65,22 @@ async def _handle_message(raw: str) -> None:
         return
 
     async with _lock:
-        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "timestamp": time.time()})
+        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "type": "cargo", "timestamp": time.time()})
 
         meta = parsed.get("MetaData", {})
         if meta.get("ShipName"):
             existing["name"] = meta["ShipName"].strip()
+
+        # MetaData frequently carries real-time latitude & longitude
+        meta_lat = meta.get("latitude")
+        meta_lng = meta.get("longitude")
+        if meta_lat is not None and meta_lng is not None and (meta_lat != 0 or meta_lng != 0):
+            if existing.get("firstSeenLat") is None or existing.get("firstSeenLng") is None:
+                existing["firstSeenLat"] = meta_lat
+                existing["firstSeenLng"] = meta_lng
+                existing["firstSeenAt"] = time.time()
+            existing["lat"] = meta_lat
+            existing["lng"] = meta_lng
 
         msg_type = parsed.get("MessageType", "")
 
@@ -75,7 +89,7 @@ async def _handle_message(raw: str) -> None:
             if report:
                 lat = report.get("Latitude")
                 lng = report.get("Longitude")
-                if lat is not None and lng is not None:
+                if lat is not None and lng is not None and (lat != 0 or lng != 0):
                     if existing.get("firstSeenLat") is None or existing.get("firstSeenLng") is None:
                         existing["firstSeenLat"] = lat
                         existing["firstSeenLng"] = lng
@@ -158,29 +172,19 @@ async def _connect_loop() -> None:
                 ping_timeout=10,
                 close_timeout=5,
             ) as ws:
-                # Subscribe with bounding boxes and filters
+                # Global bounding box for worldwide maritime visibility
                 sub = {
                     "APIKey": api_key,
-                    "BoundingBoxes": [
-                        [[34.8, 139.5], [35.7, 140.2]],
-                        [[25.0, 54.0], [27.5, 57.5]],
-                        [[27.0, 32.0], [32.0, 33.5]],
-                        [[12.0, 42.5], [14.0, 44.0]],
-                        [[8.0, -80.5], [10.0, -79.0]],
-                        [[1.0, 103.0], [3.0, 104.5]],
-                        [[22.0, 118.0], [26.0, 121.0]],
-                        [[50.0, 0.0], [53.0, 5.0]],
-                        [[33.0, -119.0], [34.5, -117.0]],
-                    ],
+                    "BoundingBoxes": [[[-90.0, -180.0], [90.0, 180.0]]],
                     "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
                 }
                 await ws.send(json.dumps(sub))
-                logger.info("AIS stream connected and subscribed")
+                logger.info("AIS stream connected and subscribed (global coverage)")
 
                 async for message in ws:
                     if not _running:
                         break
-                    await _handle_message(str(message))
+                    await _handle_message(message)
 
         except websockets.exceptions.ConnectionClosed as exc:
             logger.warning(
@@ -222,7 +226,7 @@ async def stop() -> None:
 async def get_ships() -> list[dict[str, Any]]:
     """Return a snapshot of all tracked ships, pruning stale entries."""
     now = time.time()
-    stale_cutoff = now - 10 * 60  # 10 minutes
+    stale_cutoff = now - 60 * 60  # 60 minutes
 
     async with _lock:
         # Prune stale
@@ -230,6 +234,22 @@ async def get_ships() -> list[dict[str, Any]]:
         for k in stale_keys:
             del _ships[k]
         return list(_ships.values())
+
+
+async def get_ship(mmsi: int | str) -> dict[str, Any] | None:
+    """Return a single ship record by MMSI."""
+    try:
+        int_mmsi = int(mmsi)
+    except (ValueError, TypeError):
+        int_mmsi = None
+
+    async with _lock:
+        if int_mmsi is not None and int_mmsi in _ships:
+            return _ships[int_mmsi].copy()
+        for k, v in _ships.items():
+            if str(k) == str(mmsi) or str(v.get("id")) == str(mmsi) or str(v.get("mmsi")) == str(mmsi):
+                return v.copy()
+        return None
 
 
 def subscribe_ships() -> asyncio.Queue[dict[str, Any]]:
