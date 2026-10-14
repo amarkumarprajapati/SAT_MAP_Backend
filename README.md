@@ -158,6 +158,23 @@ All endpoints are centrally registered in `app/endpoints.py` under the `/api` pr
 
 ---
 
+## Third-Party Data Sources & External APIs
+
+For the exhaustive technical specification with field-level schemas, see **[DATA_SOURCES.md](DATA_SOURCES.md)**.
+
+| Domain | 3rd-Party Provider | Protocol | What Data is Received & Processed |
+| :--- | :--- | :--- | :--- |
+| **Maritime (Global)** | **AISStream** (`aisstream.io`) | WebSocket (`wss://`) | **Live AIS vessel tracking:** MMSI, vessel name, coordinates, speed (SOG), heading (COG/TrueHeading), vessel type (cargo, tanker, military), destination. Backend calculates dynamic port congestion & chokepoint transit volumes. |
+| **Maritime (Baltic / Nordic)** | **Fintraffic Digitraffic** (`digitraffic.fi`) | MQTT over TLS | **Public Finnish/Baltic AIS feed:** High-frequency location updates and vessel metadata, merged into the main in-memory ship registry without API keys. |
+| **Military Flights & GPS Jamming** | **adsb.fi** | HTTPS REST | **Global airborne transponders:** ICAO24 hex, callsigns, airframe models, barometric altitude, ground speed, track heading. Backend classifies military aircraft & detects GPS jamming/spoofing hotspots (`nac_p <= 4`). |
+| **Satellite Orbits (Primary)** | **CelesTrak** (`celestrak.org`) | HTTPS REST | **Two-Line Elements (TLEs):** 13 constellation groups (GPS, GLONASS, Galileo, BeiDou, Weather, Earth Resources, Planet Labs, Military Recon, Radar). Propagated locally using SGP4/SDP4 Keplerian orbital mechanics. |
+| **Satellite Orbits (Fallback)** | **SatNOGS DB** (`satnogs.org`) | HTTPS REST | **Crowdsourced satellite TLE database:** Automated failover source if CelesTrak is unavailable or rate-limited. |
+| **Reverse Geocoding** | **Photon by Komoot** (OpenStreetMap) | HTTPS REST | **Coordinate-to-location mapping:** Converts `lat, lng` to city, state, country, and ISO country code. |
+| **Country Intelligence** | **Wikidata REST & Action APIs** | HTTPS REST | **Geopolitical facts:** Capital city, continent, official languages, currencies, head of state, national flag image URL, population, and land area. |
+| **Regional Summary** | **Wikipedia REST API** | HTTPS REST | **Geographical overview:** Article synopsis (500 chars) and thumbnail image for the target region or capital. |
+
+---
+
 ## Connecting the Frontend
 
 The Next.js frontend (`SAT_MAP/`) connects automatically to this backend via:
