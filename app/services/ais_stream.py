@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import time
+import math
 from typing import Any
 
 import websockets
@@ -28,6 +29,48 @@ _lock = asyncio.Lock()
 _ws_task: asyncio.Task | None = None
 _running = False
 MAX_SHIPS = 20_000
+MAX_TRACK_POINTS = 500
+
+
+def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance between two AIS positions."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 6371.0088 * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1 - a)))
+
+
+def _record_position(existing: dict[str, Any], lat: float, lng: float, seen_at: float) -> None:
+    """Append a valid, non-duplicate position and update observed journey stats."""
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or (lat == 0 and lng == 0):
+        return
+    track = existing.setdefault("track", [])
+    if track and seen_at - float(track[-1].get("timestamp", 0)) < 1:
+        track[-1] = {"lat": lat, "lng": lng, "timestamp": seen_at, "speed": existing.get("speed")}
+        existing["lat"], existing["lng"] = lat, lng
+        existing["lastSeenAt"] = seen_at
+        return
+    if track:
+        previous = track[-1]
+        segment = _distance_km(float(previous["lat"]), float(previous["lng"]), lat, lng)
+        # Drop obvious bad jumps; they must not inflate reported vessel travel.
+        elapsed_hours = max((seen_at - float(previous["timestamp"])) / 3600, 1 / 3600)
+        if segment <= 1000 and segment / elapsed_hours <= 90:
+            existing["trackDistanceKm"] = float(existing.get("trackDistanceKm", 0)) + segment
+        else:
+            segment = 0
+    else:
+        existing["trackStartLat"] = lat
+        existing["trackStartLng"] = lng
+        existing["trackStartAt"] = seen_at
+        existing["trackDistanceKm"] = 0.0
+    track.append({"lat": lat, "lng": lng, "timestamp": seen_at, "speed": existing.get("speed")})
+    if len(track) > MAX_TRACK_POINTS:
+        del track[:-MAX_TRACK_POINTS]
+    existing["lat"], existing["lng"] = lat, lng
+    existing["lastSeenAt"] = seen_at
+    existing["trackPointCount"] = int(existing.get("trackPointCount", 0)) + 1
 
 
 def _get_ship_type(type_code: int) -> str:
@@ -65,7 +108,7 @@ async def _handle_message(raw: str | bytes) -> None:
         return
 
     async with _lock:
-        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "type": "cargo", "timestamp": time.time()})
+        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "type": "cargo", "timestamp": time.time(), "track": [], "trackPointCount": 0, "trackDistanceKm": 0.0})
 
         meta = parsed.get("MetaData", {})
         if meta.get("ShipName"):
@@ -74,13 +117,12 @@ async def _handle_message(raw: str | bytes) -> None:
         # MetaData frequently carries real-time latitude & longitude
         meta_lat = meta.get("latitude")
         meta_lng = meta.get("longitude")
-        if meta_lat is not None and meta_lng is not None and (meta_lat != 0 or meta_lng != 0):
+        if meta_lat is not None and meta_lng is not None and (meta_lat != 0 or meta_lng != 0) and existing.get("lat") is None:
             if existing.get("firstSeenLat") is None or existing.get("firstSeenLng") is None:
                 existing["firstSeenLat"] = meta_lat
                 existing["firstSeenLng"] = meta_lng
                 existing["firstSeenAt"] = time.time()
-            existing["lat"] = meta_lat
-            existing["lng"] = meta_lng
+            _record_position(existing, float(meta_lat), float(meta_lng), time.time())
 
         msg_type = parsed.get("MessageType", "")
 
@@ -94,9 +136,9 @@ async def _handle_message(raw: str | bytes) -> None:
                         existing["firstSeenLat"] = lat
                         existing["firstSeenLng"] = lng
                         existing["firstSeenAt"] = time.time()
-                    existing["lat"] = lat
-                    existing["lng"] = lng
                 existing["speed"] = report.get("Sog")
+                if lat is not None and lng is not None:
+                    _record_position(existing, float(lat), float(lng), time.time())
                 true_heading = report.get("TrueHeading")
                 course = report.get("Cog")
                 existing["heading"] = true_heading if true_heading is not None and 0 <= true_heading < 360 else course
@@ -135,8 +177,11 @@ async def _handle_message(raw: str | bytes) -> None:
 async def ingest_external_ship(mmsi: int, fields: dict[str, Any]) -> None:
     """Merge a position or metadata update from a secondary AIS provider."""
     async with _lock:
-        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "timestamp": time.time()})
+        existing = _ships.get(mmsi, {"id": mmsi, "mmsi": mmsi, "timestamp": time.time(), "track": [], "trackPointCount": 0, "trackDistanceKm": 0.0})
+        lat, lng = fields.get("lat"), fields.get("lng")
         existing.update({key: value for key, value in fields.items() if value is not None})
+        if lat is not None and lng is not None:
+            _record_position(existing, float(lat), float(lng), time.time())
         if existing.get("lat") is not None and existing.get("lng") is not None:
             existing["timestamp"] = time.time()
             _ships[mmsi] = existing
