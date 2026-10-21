@@ -11,7 +11,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .endpoints import Endpoints
-from .routers import satellites, flights, maritime, stats, region_dossier
+from .routers import satellites, flights, maritime, stats, region_dossier, news
 from .services import ais_stream, digitraffic_ais, tle_cache
 
 
@@ -66,6 +66,7 @@ app.include_router(flights.router)
 app.include_router(maritime.router)
 app.include_router(region_dossier.router)
 app.include_router(stats.router)
+app.include_router(news.router)
 
 app.add_middleware(
     PrivateNetworkCORSMiddleware,

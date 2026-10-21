@@ -14,6 +14,7 @@ class Endpoints:
     SATELLITES_ORBIT = f"{API_PREFIX}/satellites/orbit"
     REGION_DOSSIER = f"{API_PREFIX}/region-dossier"
     STATS = f"{API_PREFIX}/stats"
+    NEWS = f"{API_PREFIX}/news"
 
     @classmethod
     def url(cls, endpoint: str) -> str:
