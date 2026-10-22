@@ -8,22 +8,19 @@ from typing import Any
 import httpx
 
 from ..config import settings
+from .. import database
+from ..urls import CELESTRAK_TLE, SATNOGS_TLE
 
 logger = logging.getLogger("ltmap.tle")
 
 # ── CelesTrak URLs ──────────────────────────────────────────────────────────────
-CT = "https://celestrak.org/NORAD/elements/gp.php?GROUP="
-FMT = "&FORMAT=tle"
-
 CELESTRAK_GROUPS = [
-    f"{CT}gps-ops{FMT}", f"{CT}glonass-operational{FMT}",
-    f"{CT}galileo{FMT}", f"{CT}beidou{FMT}",
-    f"{CT}weather{FMT}", f"{CT}resource{FMT}", f"{CT}planet{FMT}",
-    f"{CT}goes{FMT}", f"{CT}argos{FMT}", f"{CT}dmc{FMT}", f"{CT}spire{FMT}",
-    f"{CT}military{FMT}", f"{CT}radar{FMT}",
+    CELESTRAK_TLE.format(group=group)
+    for group in (
+        "gps-ops", "glonass-operational", "galileo", "beidou", "weather",
+        "resource", "planet", "goes", "argos", "dmc", "spire", "military", "radar",
+    )
 ]
-
-SATNOGS_API = "https://db.satnogs.org/api/tle/?format=json"
 
 # ── Storage ─────────────────────────────────────────────────────────────────────
 _cache_file = Path(settings.CACHE_DIR) / "tle-cache.json"
@@ -166,11 +163,12 @@ async def refresh(force: bool = False) -> tuple[list[dict[str, str]], str]:
             _satellites = merged
             _cache_time = time.time()
             _save_to_disk(merged)
+            await database.save_snapshot("tle_catalog", merged)
         else:
             # SatNOGS fallback
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.get(SATNOGS_API, headers={"Accept": "application/json"})
+                    resp = await client.get(SATNOGS_TLE, headers={"Accept": "application/json"})
                     if resp.status_code == 200:
                         data = resp.json()
                         fetched = []
@@ -190,6 +188,7 @@ async def refresh(force: bool = False) -> tuple[list[dict[str, str]], str]:
                             _cache_time = time.time()
                             source = "satnogs-api"
                             _save_to_disk(fetched)
+                            await database.save_snapshot("tle_catalog", fetched)
                             return _satellites, source
             except Exception as exc:
                 logger.error("SatNOGS fetch error: %s", exc)
@@ -217,3 +216,17 @@ def get_by_norad(norad_id: str) -> dict[str, str] | None:
 def catalogue_size() -> int:
     """Number of TLEs currently cached (lock-free, for stats)."""
     return len(_satellites)
+
+
+async def restore_database_cache() -> None:
+    """Use the last saved TLE catalogue while the upstream feed refreshes."""
+    global _satellites, _cache_time
+    if _satellites:
+        return
+    saved = await database.load_snapshot("tle_catalog")
+    if isinstance(saved, list) and saved:
+        _satellites = saved
+        # Mark stale so the first API request attempts a refresh and backfills
+        # from this catalogue if the upstream provider is unavailable.
+        _cache_time = time.time() - _CACHE_TTL - 1
+        logger.info("Restored %d TLE records from PostgreSQL", len(saved))

@@ -1,33 +1,79 @@
 services:
+  osint:
+    build:
+      context: ../osint
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      PORT: 3000
+      OSINT_POLL_ENABLED: "false"
+      OSINT_POLL_LIMIT: 5
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - sat_map_net
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sat_map}
+      POSTGRES_USER: ${POSTGRES_USER:-sat_map}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sat_map_net
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: sat_map_backend
     restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"
     env_file:
       - .env
     environment:
-      - HOST=0.0.0.0
-      - PORT=8000
-      - RELOAD=true
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8000
+      RELOAD: "false"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sat_map}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-sat_map}
+      DATABASE_REQUIRED: "true"
+      OSINT_SERVICE_URL: http://osint:3000
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS to your frontend origin}
     volumes:
-      - .:/app
       - cache_data:/app/.cache
+    depends_on:
+      db:
+        condition: service_healthy
+      osint:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"]
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 20s
     networks:
       - sat_map_net
 
 volumes:
   cache_data:
-    driver: local
+  postgres_data:
 
 networks:
   sat_map_net:

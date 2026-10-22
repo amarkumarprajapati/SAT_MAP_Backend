@@ -7,30 +7,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("ltmap.main")
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from .config import settings
+from . import database
 from .endpoints import Endpoints
-from .routers import satellites, flights, maritime, stats, region_dossier, news
+from .routers import satellites, flights, maritime, stats, region_dossier, news, providers, osint
 from .services import ais_stream, digitraffic_ais, tle_cache
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await ais_stream.start()
-    await digitraffic_ais.start()
-    asyncio.create_task(tle_cache.refresh())
-    yield
-    await ais_stream.stop()
-    await digitraffic_ais.stop()
+    await database.connect()
+    await providers.open_client()
+    await osint.open_client()
+    await tle_cache.restore_database_cache()
+    tle_refresh_task = None
+    try:
+        await ais_stream.start()
+        await digitraffic_ais.start()
+        tle_refresh_task = asyncio.create_task(tle_cache.refresh(), name="tle-refresh")
+        yield
+    finally:
+        if tle_refresh_task is not None:
+            tle_refresh_task.cancel()
+            try:
+                await tle_refresh_task
+            except asyncio.CancelledError:
+                pass
+        await ais_stream.stop()
+        await digitraffic_ais.stop()
+        await providers.close_client()
+        await osint.close_client()
+        await database.close()
 
 
 app = FastAPI(
     title="LTmap Intelligence Backend",
     description="High-performance FastAPI service powering the LTmap Geospatial & OSINT Dashboard.",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.APP_ENV != "production" else None,
+    redoc_url="/redoc" if settings.APP_ENV != "production" else None,
     lifespan=lifespan,
 )
 
@@ -51,13 +69,15 @@ start_time = time.time()
 @app.get(Endpoints.HEALTH)
 @app.get(Endpoints.API_HEALTH)
 async def health_check():
-
-    return {
-        "status": "connected",
+    database_status = await database.status()
+    healthy = not settings.DATABASE_REQUIRED or database_status == "connected"
+    return JSONResponse(status_code=200 if healthy else 503, content={
+        "status": "connected" if healthy else "unavailable",
         "service": "LTmap FastAPI Backend",
         "version": "1.0.0",
-        "base_url": settings.BASE_URL
-    }
+        "base_url": settings.BASE_URL,
+        "database": database_status,
+    })
 
 
 
@@ -67,11 +87,17 @@ app.include_router(maritime.router)
 app.include_router(region_dossier.router)
 app.include_router(stats.router)
 app.include_router(news.router)
+app.include_router(providers.router)
+app.include_router(osint.router)
 
 app.add_middleware(
     PrivateNetworkCORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else ["*"],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=(
+        r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+        if settings.APP_ENV != "production"
+        else None
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -15,13 +15,14 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..utils.stealth_fetch import stealth_get
+from .. import database
+from ..urls import ADSBFI_MILITARY
 
 logger = logging.getLogger("ltmap.flights")
 
 router = APIRouter(prefix="/api", tags=["flights"])
 
 # ── Constants ───────────────────────────────────────────────────────────────────
-ADSBFI_BASE = "https://opendata.adsb.fi/api/v2"
 ADSB_MAX_DIST = 250  # nm
 
 HELI_TYPES = {
@@ -192,7 +193,7 @@ async def _fetch_flights() -> dict:
 
     # Fetch adsb.fi military feed
     try:
-        resp = await stealth_get(f"{ADSBFI_BASE}/mil", timeout=15.0)
+        resp = await stealth_get(ADSBFI_MILITARY, timeout=15.0)
         if resp.status_code == 200:
             data = resp.json()
             for ac in data.get("ac", []):
@@ -263,6 +264,7 @@ async def get_flights():
             data = await _fetch_flights()
             _cached_data = data
             _last_fetch = time.time()
+            await database.save_snapshot("flights", data)
 
             cache_ctl = (
                 "no-store, max-age=0"
@@ -273,6 +275,8 @@ async def get_flights():
 
         except Exception as exc:
             logger.error("Flight fetch error: %s", exc)
+            if not _cached_data:
+                _cached_data = await database.load_snapshot("flights")
             if _cached_data:
                 stale = {**_cached_data, "source": (_cached_data.get("source", "unknown") + "+stale")}
                 return JSONResponse(content=stale, headers={"Cache-Control": "no-store, max-age=0"})

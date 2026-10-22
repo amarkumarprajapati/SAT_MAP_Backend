@@ -10,6 +10,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from . import ais_stream
+from ..urls import DIGITRAFFIC_MQTT_HOST, DIGITRAFFIC_MQTT_PATH, DIGITRAFFIC_MQTT_PORT
 
 logger = logging.getLogger("ltmap.digitraffic")
 _task: asyncio.Task | None = None
@@ -71,7 +72,7 @@ async def _run() -> None:
                 protocol=mqtt.MQTTv311,
             )
             _client = client
-            client.ws_set_options(path="/mqtt")
+            client.ws_set_options(path=DIGITRAFFIC_MQTT_PATH)
             client.tls_set()
 
             def on_connect(client: mqtt.Client, userdata: Any, flags: Any, reason_code: Any, properties: Any) -> None:
@@ -88,7 +89,7 @@ async def _run() -> None:
             client.on_disconnect = on_disconnect
             client.on_message = lambda _client, _userdata, message: _handle_message(message.topic, message.payload)
             try:
-                client.connect("meri.digitraffic.fi", 443, keepalive=60)
+                client.connect(DIGITRAFFIC_MQTT_HOST, DIGITRAFFIC_MQTT_PORT, keepalive=60)
                 client.loop_start()
                 while True:
                     await asyncio.sleep(3600)

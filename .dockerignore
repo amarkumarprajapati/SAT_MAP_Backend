@@ -10,4 +10,7 @@ venv/
 .git
 .gitignore
 .env.local
+.env
+.env.*
+!.env.example
 *.log

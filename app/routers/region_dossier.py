@@ -14,13 +14,21 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
+from ..urls import (
+    PHOTON_REVERSE,
+    WIKIDATA_API,
+    WIKIDATA_ITEMS,
+    WIKIMEDIA_FILE,
+    WIKIPEDIA_API,
+    WIKIPEDIA_SUMMARY,
+)
 
 logger = logging.getLogger("ltmap.dossier")
 
 router = APIRouter(prefix="/api", tags=["dossier"])
 
 ATTRIBUTION = "© OpenStreetMap contributors"
-WD_REST = "https://www.wikidata.org/w/rest.php/wikibase/v1/entities/items"
+WD_REST = WIKIDATA_ITEMS
 WD_TIMEOUT = 8.0
 
 # ── Simple TTL cache ────────────────────────────────────────────────────────────
@@ -58,7 +66,7 @@ async def _place_at(lat: float, lng: float) -> dict | None:
         try:
             async with httpx.AsyncClient(timeout=WD_TIMEOUT) as client:
                 resp = await client.get(
-                    f"https://photon.komoot.io/reverse?lat={lat:.3f}&lon={lng:.3f}&lang=en&radius=50",
+                    f"{PHOTON_REVERSE}?lat={lat:.3f}&lon={lng:.3f}&lang=en&radius=50",
                     headers={"User-Agent": "LTMAP-OSINT/1.0"},
                 )
                 if resp.status_code == 200:
@@ -155,7 +163,7 @@ async def _labels_for(ids: list[str]) -> dict[str, str]:
     try:
         async with httpx.AsyncClient(timeout=WD_TIMEOUT) as client:
             resp = await client.get(
-                f"https://www.wikidata.org/w/api.php?action=wbgetentities&props=labels&languages=en&format=json&ids={'|'.join(wanted)}",
+                f"{WIKIDATA_API}?action=wbgetentities&props=labels&languages=en&format=json&ids={'|'.join(wanted)}",
                 headers={"User-Agent": "LTMAP-OSINT/1.0"},
             )
             if resp.status_code == 200:
@@ -182,7 +190,7 @@ async def _read_country(country_name: str) -> dict | None:
         # Step 1: Get QID from Wikipedia
         async with httpx.AsyncClient(timeout=WD_TIMEOUT) as client:
             resp = await client.get(
-                f"https://en.wikipedia.org/w/api.php?action=query&prop=pageprops&ppprop=wikibase_item&redirects=1&format=json&titles={quote(country_name)}",
+                f"{WIKIPEDIA_API}?action=query&prop=pageprops&ppprop=wikibase_item&redirects=1&format=json&titles={quote(country_name)}",
                 headers={"User-Agent": "LTMAP-OSINT/1.0"},
             )
             if resp.status_code != 200:
@@ -222,7 +230,7 @@ async def _read_country(country_name: str) -> dict | None:
                 "subregion": names.get(continent),
                 "languages": [names[l] for l in languages if l in names],
                 "currencies": [names[c] for c in currencies if c in names],
-                "flag_url": f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(flag_file)}" if flag_file else None,
+                "flag_url": f"{WIKIMEDIA_FILE}/{quote(flag_file)}" if flag_file else None,
                 "timezones": [],
             },
             "head_of_state": (
@@ -273,7 +281,7 @@ async def get_region_dossier(
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     resp = await client.get(
-                        f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(wiki_query)}",
+                        f"{WIKIPEDIA_SUMMARY}/{quote(wiki_query)}",
                         headers={"User-Agent": "LTMAP-OSINT/1.0"},
                     )
                     if resp.status_code == 200:

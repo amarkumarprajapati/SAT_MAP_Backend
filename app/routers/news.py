@@ -17,6 +17,9 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from ..utils.stealth_fetch import stealth_get
+from .. import database
+from ..urls import NEWS_FEEDS, NEWS_SOURCES
+from .osint import fetch_osint_news
 
 logger = logging.getLogger("ltmap.news")
 
@@ -31,27 +34,27 @@ RSS_FEEDS = [
     {
         "source": "SpaceNews",
         "category": "space",
-        "url": "https://spacenews.com/feed/",
+        "url": NEWS_FEEDS["space_news"],
     },
     {
         "source": "NASA Releases",
         "category": "space",
-        "url": "https://www.nasa.gov/news-release/feed/",
+        "url": NEWS_FEEDS["nasa_releases"],
     },
     {
         "source": "gCaptain Maritime",
         "category": "maritime",
-        "url": "https://gcaptain.com/feed/",
+        "url": NEWS_FEEDS["gcaptain"],
     },
     {
         "source": "USNI Naval News",
         "category": "maritime",
-        "url": "https://news.usni.org/feed",
+        "url": NEWS_FEEDS["usni"],
     },
     {
         "source": "Defense News",
         "category": "aviation",
-        "url": "https://www.defensenews.com/arc/outboundfeeds/rss/",
+        "url": NEWS_FEEDS["defense_news"],
     },
 ]
 
@@ -63,7 +66,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "Falcon 9 launched from Cape Canaveral Space Force Station inserting 23 broadband satellites into a 53-degree inclination low-Earth orbit.",
         "category": "space",
         "source": "Orbital Telemetry",
-        "url": "https://spacenews.com",
+        "url": NEWS_SOURCES["space_news"],
         "timestamp": int(time.time() - 900),
         "urgency": "medium",
         "coordinates": [28.5721, -80.648],
@@ -75,7 +78,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "Commercial AIS vessels transiting Gulf of Aden advised to maintain 14+ knot cruising speeds and continuous VHF Channel 16 watch amidst drone activity.",
         "category": "maritime",
         "source": "UKMTO / Maritime Executive",
-        "url": "https://gcaptain.com",
+        "url": NEWS_SOURCES["gcaptain"],
         "timestamp": int(time.time() - 2400),
         "urgency": "high",
         "coordinates": [12.583, 43.333],
@@ -87,7 +90,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "ADS-B flight telemetry indicates intermittent GPS navigation degrades affecting commercial routes between Helsinki, Tallinn, and Kaliningrad airspace.",
         "category": "aviation",
         "source": "ADS-B Signal Intel",
-        "url": "https://opendata.adsb.fi",
+        "url": NEWS_SOURCES["adsb"],
         "timestamp": int(time.time() - 3600),
         "urgency": "high",
         "coordinates": [58.595, 22.0],
@@ -99,7 +102,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "Over 82 VLCC crude tankers observed underway through the inbound and outbound traffic separation scheme (TSS) during the last 24-hour cycle.",
         "category": "maritime",
         "source": "OSINT Maritime Intel",
-        "url": "https://gcaptain.com",
+        "url": NEWS_SOURCES["gcaptain"],
         "timestamp": int(time.time() - 5400),
         "urgency": "low",
         "coordinates": [26.566, 56.25],
@@ -111,7 +114,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "Coronal mass ejection transit expected to generate localized ionospheric disturbances affecting L-band satellite communication and polar auroral bands.",
         "category": "space",
         "source": "NOAA SWPC",
-        "url": "https://www.swpc.noaa.gov",
+        "url": NEWS_SOURCES["noaa"],
         "timestamp": int(time.time() - 7200),
         "urgency": "medium",
         "coordinates": [65.0, -147.0],
@@ -123,7 +126,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "High-altitude long-endurance unmanned reconnaissance aircraft FORTE12 observed returning to Naval Air Station Sigonella following maritime sweep.",
         "category": "aviation",
         "source": "OpenSky Network",
-        "url": "https://opensky-network.org",
+        "url": NEWS_SOURCES["open_sky"],
         "timestamp": int(time.time() - 10800),
         "urgency": "medium",
         "coordinates": [43.5, 34.0],
@@ -135,7 +138,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "Gatun Lake freshwater levels hold steady following seasonal rainfall, easing draft restrictions for Neopanamax container vessels.",
         "category": "maritime",
         "source": "Panama Canal Admin",
-        "url": "https://mcanals.com",
+        "url": NEWS_SOURCES["panama_canals"],
         "timestamp": int(time.time() - 14400),
         "urgency": "low",
         "coordinates": [9.08, -79.68],
@@ -147,7 +150,7 @@ BASE_OSINT_DISPATCHES: List[Dict[str, Any]] = [
         "summary": "Quick Reaction Alert (QRA) Eurofighter Typhoons launched from Mihail Kogalniceanu Air Base to monitor non-transponding aircraft over international waters.",
         "category": "geoint",
         "source": "NATO Allied Air Command",
-        "url": "https://ac.nato.int",
+        "url": NEWS_SOURCES["nato"],
         "timestamp": int(time.time() - 18000),
         "urgency": "high",
         "coordinates": [44.36, 28.48],
@@ -225,12 +228,43 @@ async def _get_all_news() -> List[Dict[str, Any]]:
         return _news_cache
 
     live_items: List[Dict[str, Any]] = []
+    try:
+        for article in await fetch_osint_news(limit=5):
+            published_at = article.get("published_at")
+            try:
+                published_ts = int(datetime.fromisoformat(
+                    published_at.replace("Z", "+00:00")
+                ).timestamp()) if published_at else int(time.time())
+            except (ValueError, AttributeError):
+                published_ts = int(time.time())
+            coordinates = None
+            if article.get("latitude") is not None and article.get("longitude") is not None:
+                coordinates = [article["latitude"], article["longitude"]]
+            live_items.append({
+                "id": f"nest-osint-{article.get('id', abs(hash(article.get('link', ''))))}",
+                "title": article.get("title", "OSINT report"),
+                "summary": article.get("description") or article.get("title", ""),
+                "category": "geoint",
+                "source": article.get("source") or "OSINT News",
+                "url": article.get("link", ""),
+                "timestamp": published_ts,
+                "urgency": "medium",
+                "coordinates": coordinates,
+                "tags": ["OSINT", article.get("country") or "Global"],
+            })
+    except Exception as exc:
+        logger.warning("NestJS OSINT feed unavailable: %s", exc)
     for feed in RSS_FEEDS:
         try:
             feed_items = await _fetch_rss_feed(feed)
             live_items.extend(feed_items)
         except Exception:
             continue
+
+    if not live_items:
+        saved_news = await database.load_snapshot("news")
+        if isinstance(saved_news, list) and saved_news:
+            live_items = saved_news
 
     # Merge live items with baseline OSINT dispatches, avoiding duplicates by title similarity
     combined = list(live_items)
@@ -245,6 +279,7 @@ async def _get_all_news() -> List[Dict[str, Any]]:
 
     _news_cache = combined
     _news_cache_time = now
+    await database.save_snapshot("news", combined)
     return _news_cache
 
 

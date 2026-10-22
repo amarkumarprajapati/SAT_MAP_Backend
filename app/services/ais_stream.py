@@ -18,6 +18,7 @@ from typing import Any
 import websockets
 
 from ..config import settings
+from ..urls import AISSTREAM_WEBSOCKET
 
 logger = logging.getLogger("ltmap.ais")
 
@@ -212,7 +213,7 @@ async def _connect_loop() -> None:
         try:
             logger.info("Connecting to aisstream.io...")
             async with websockets.connect(
-                "wss://stream.aisstream.io/v0/stream",
+                AISSTREAM_WEBSOCKET,
                 ping_interval=30,
                 ping_timeout=10,
                 close_timeout=5,

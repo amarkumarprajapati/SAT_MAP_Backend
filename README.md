@@ -1,14 +1,17 @@
 # LTmap FastAPI Backend
 
-High-performance Python backend powering the LTmap geospatial & OSINT dashboard. All 3rd-party data feeds, real-time SGP4 orbital propagation, AIS maritime WebSocket streams, and OSINT geocoding have been consolidated here.
+FastAPI backend powering the LTmap geospatial and OSINT dashboard. It combines live data feeds, SGP4 satellite propagation, AIS streams, and a small PostgreSQL store for durable data snapshots.
+
+The browser calls FastAPI only. FastAPI reads OSINT news from the NestJS service at `OSINT_SERVICE_URL` and merges it into `/api/news`.
 
 ---
 
 ## Quick Start
 
 ### 1. Prerequisites
-- **Python 3.10+** (Python 3.10 or 3.12 recommended)
+- **Python 3.10+**
 - `pip` package manager
+- Docker Compose for the production-style PostgreSQL setup
 
 ### 2. Navigate to Backend Directory
 ```bash
@@ -35,35 +38,32 @@ pip install -r requirements.txt
 *(On Windows with Python Launcher, you can also run: `py -3.10 -m pip install -r requirements.txt`)*
 
 ### 5. Configure Environment (`.env`)
-The backend reads from `backend/.env`. A configured `.env` file is already provided:
+Use `.env.example` as a template. Add the PostgreSQL settings to your local `.env` while preserving any existing API keys, then set the database password and public frontend origin:
 ```env
-# Server Binding
+APP_ENV=production
 HOST=0.0.0.0
 PORT=8000
-BASE_URL=http://localhost:8000
+BASE_URL=https://api.example.com
 API_PREFIX=/api
-TIMEOUT_SECONDS=30.0
+CORS_ORIGINS=https://your-frontend.example.com
 
-# AIS Stream (Live Maritime Ship Tracking)
-AIS_API_KEY=5deb54fff0481c85565cc4ddc9883875500ffc6e
-
-# OpenSky Network (Optional, for higher military flight rate limits)
-OPENSKY_CLIENT_ID=
-OPENSKY_CLIENT_SECRET=
-
-# NASA FIRMS (Optional)
-FIRMS_API_KEY=
+# PostgreSQL (use a long URL-safe password)
+POSTGRES_DB=sat_map
+POSTGRES_USER=sat_map
+POSTGRES_PASSWORD=replace-with-a-long-random-password
+DATABASE_REQUIRED=true
 ```
+Keep `.env` private. Docker Compose starts PostgreSQL, waits for its health check, and then starts the API. The database stores the latest TLE catalogue, flight feed, and news snapshots in a JSONB table. The named `postgres_data` volume keeps them across container restarts.
 
 ---
 
 ## Running the Server
 
-### Option A: Using Docker Compose (Recommended for Containerized Run)
+### Option A: Using Docker Compose (Recommended)
 Make sure Docker Desktop is installed and running.
 
 ```bash
-# 1. Build and start the container in the background
+# 1. Configure .env as described above, then build and start the API and PostgreSQL
 docker compose up -d --build
 
 # 2. View real-time logs
@@ -77,6 +77,8 @@ docker compose down
 ```
 
 ### Option B: Using Standalone Docker
+Use standalone Docker only when you provide a `DATABASE_URL` that points to a reachable PostgreSQL server. Compose starts and configures PostgreSQL for you.
+
 ```bash
 # Build the image
 docker build -t sat-map-backend .
@@ -90,7 +92,9 @@ docker stop sat_map_backend && docker rm sat_map_backend
 
 ### Option C: Using `run.py` (Local Python)
 ```powershell
-# Standard run
+# Development mode (PostgreSQL is optional; set DATABASE_URL to enable it)
+$env:APP_ENV = "development"
+$env:DATABASE_REQUIRED = "false"
 python run.py
 
 # With hot-reload for active development
@@ -112,6 +116,8 @@ INFO:     Waiting for application startup.
 INFO:     AIS stream connected and subscribed
 INFO:     Application startup complete.
 ```
+
+In production, `APP_ENV=production` requires `DATABASE_URL`, `DATABASE_REQUIRED=true`, and explicit non-wildcard `CORS_ORIGINS`. The API health endpoint reports PostgreSQL status and returns HTTP 503 if the required database is unavailable. Interactive API docs are disabled in production.
 
 ---
 
