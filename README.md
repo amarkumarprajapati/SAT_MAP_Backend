@@ -47,7 +47,7 @@ BASE_URL=https://api.example.com
 API_PREFIX=/api
 CORS_ORIGINS=https://your-frontend.example.com
 
-# PostgreSQL (use a long URL-safe password)
+# PostgreSQL (Compose passes the password separately, so punctuation is supported)
 POSTGRES_DB=sat_map
 POSTGRES_USER=sat_map
 POSTGRES_PASSWORD=replace-with-a-long-random-password

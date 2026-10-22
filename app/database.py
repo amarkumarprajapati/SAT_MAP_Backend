@@ -12,20 +12,37 @@ logger = logging.getLogger("ltmap.database")
 _pool: asyncpg.Pool | None = None
 
 
+def _database_configured() -> bool:
+    return bool(settings.DATABASE_URL) or all(
+        (settings.DATABASE_HOST, settings.DATABASE_NAME, settings.DATABASE_USER, settings.DATABASE_PASSWORD)
+    )
+
+
 async def connect() -> None:
     """Open the PostgreSQL pool and create the snapshot table."""
     global _pool
 
-    if not settings.DATABASE_URL:
+    if not _database_configured():
         if settings.DATABASE_REQUIRED:
-            raise RuntimeError("DATABASE_URL is required but not configured")
+            raise RuntimeError("DATABASE_URL or complete DATABASE_* settings are required")
         logger.info("PostgreSQL is not configured; persistent snapshots are disabled")
         return
 
     pool = None
     try:
+        connection_options = (
+            {"dsn": settings.DATABASE_URL}
+            if settings.DATABASE_URL
+            else {
+                "host": settings.DATABASE_HOST,
+                "port": settings.DATABASE_PORT,
+                "database": settings.DATABASE_NAME,
+                "user": settings.DATABASE_USER,
+                "password": settings.DATABASE_PASSWORD,
+            }
+        )
         pool = await asyncpg.create_pool(
-            dsn=settings.DATABASE_URL,
+            **connection_options,
             min_size=1,
             max_size=settings.DATABASE_POOL_SIZE,
             command_timeout=settings.DATABASE_COMMAND_TIMEOUT,
@@ -93,7 +110,7 @@ async def load_snapshot(key: str) -> Any | None:
 
 async def status() -> str:
     if _pool is None:
-        return "not_configured" if not settings.DATABASE_URL else "disconnected"
+        return "not_configured" if not _database_configured() else "disconnected"
     try:
         await _pool.fetchval("SELECT 1")
         return "connected"

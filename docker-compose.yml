@@ -51,7 +51,11 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       RELOAD: "false"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-sat_map}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-sat_map}
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${POSTGRES_DB:-sat_map}
+      DATABASE_USER: ${POSTGRES_USER:-sat_map}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       DATABASE_REQUIRED: "true"
       OSINT_SERVICE_URL: http://osint:3000
       CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS to your frontend origin}

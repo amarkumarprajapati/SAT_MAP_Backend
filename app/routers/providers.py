@@ -76,22 +76,27 @@ async def satellite_info(name: str = Query(..., min_length=1, max_length=160)):
     elif re.search(r"ONEWEB", clean, re.I):
         query_name = "OneWeb satellite constellation"
 
-    for term in dict.fromkeys((query_name, clean + " satellite", clean)):
-        if term == query_name:
-            response = await _get(f"{WIKIPEDIA_SUMMARY}/{quote(term, safe='')}")
-            payload = _wiki_payload(response.json(), term)
-            if payload:
-                return payload
-        else:
-            response = await _get(
-                f"{WIKIPEDIA_API}?action=query&list=search&srsearch={quote(term)}&utf8=&format=json"
-            )
-            titles = response.json().get("query", {}).get("search", [])
-            if titles:
-                summary = await _get(f"{WIKIPEDIA_SUMMARY}/{quote(titles[0]['title'], safe='')}")
-                payload = _wiki_payload(summary.json(), titles[0]["title"])
+    try:
+        for term in dict.fromkeys((query_name, clean + " satellite", clean)):
+            if term == query_name:
+                response = await _get(f"{WIKIPEDIA_SUMMARY}/{quote(term, safe='')}")
+                payload = _wiki_payload(response.json(), term)
                 if payload:
                     return payload
+            else:
+                response = await _get(
+                    f"{WIKIPEDIA_API}?action=query&list=search&srsearch={quote(term)}&utf8=&format=json"
+                )
+                titles = response.json().get("query", {}).get("search", [])
+                if titles:
+                    summary = await _get(f"{WIKIPEDIA_SUMMARY}/{quote(titles[0]['title'], safe='')}")
+                    payload = _wiki_payload(summary.json(), titles[0]["title"])
+                    if payload:
+                        return payload
+    except HTTPException as exc:
+        # Unknown catalogue names and transient Wikipedia failures should use
+        # the local satellite summary instead of failing the whole API request.
+        logger.info("Satellite metadata lookup unavailable for %s: %s", clean, exc.detail)
     return {
         "title": name,
         "description": "Active Orbital Intelligence Asset",
@@ -107,10 +112,19 @@ async def reverse_geocode(
     latitude: float = Query(..., ge=-90, le=90),
     longitude: float = Query(..., ge=-180, le=180),
 ):
-    response = await _get(
-        f"{BIGDATACLOUD_REVERSE}?latitude={latitude}&longitude={longitude}&localityLanguage=en"
-    )
-    return response.json()
+    try:
+        response = await _get(
+            f"{BIGDATACLOUD_REVERSE}?latitude={latitude}&longitude={longitude}&localityLanguage=en"
+        )
+        return response.json()
+    except HTTPException as exc:
+        logger.info("Reverse geocoder unavailable: %s", exc.detail)
+        return {
+            "locality": None,
+            "principalSubdivision": None,
+            "countryName": None,
+            "geocodeUnavailable": True,
+        }
 
 
 @router.get("/earthquakes")
@@ -128,18 +142,11 @@ async def earthquakes():
 @router.get("/map/style")
 async def map_style():
     response = await _get(CARTO_DARK_STYLE)
-    style = response.json()
-    # MapLibre resolves relative style assets against the style URL. Rewrite each
-    # Carto resource URL to the same-origin backend proxy.
-    def rewrite(value):
-        if isinstance(value, str) and CARTO_TILE_HOST in value:
-            return "/api/map/carto?url=" + quote(value, safe="")
-        if isinstance(value, list):
-            return [rewrite(item) for item in value]
-        if isinstance(value, dict):
-            return {key: rewrite(item) for key, item in value.items()}
-        return value
-    return rewrite(style)
+    # Keep {z}/{x}/{y} tile placeholders intact in the style JSON. MapLibre
+    # expands them before transformRequest routes each Carto asset through the
+    # same-origin /api/map/carto proxy. Encoding whole templates into a query
+    # string here prevents MapLibre from recognizing the tile placeholders.
+    return response.json()
 
 
 @router.get("/map/carto")
