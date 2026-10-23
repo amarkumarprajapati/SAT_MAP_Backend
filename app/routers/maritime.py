@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from ..services import ais_stream
@@ -156,79 +156,80 @@ def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 # ── Snapshot Cache ──────────────────────────────────────────────────────────────
-_snapshot_cache: dict | None = None
-_snapshot_time: float = 0
+_snapshot_cache: dict[bool, dict] = {}
+_snapshot_time: dict[bool, float] = {}
 SNAPSHOT_TTL = 5.0  # seconds
 
 
-async def _build_snapshot() -> dict:
+async def _build_snapshot(include_ports: bool = True) -> dict:
     """Build a complete maritime snapshot with dynamic port/chokepoint analysis."""
     ships = await ais_stream.get_ships()
     now = time.time()
 
-    # Dynamic port analysis
+    # Port and chokepoint analysis is expensive for large AIS feeds. Skip it
+    # for ship-only requests; those requests do not use either overlay.
     dynamic_ports = []
-    for port in PORTS:
-        nearby_count = 0
-        waiting_count = 0
-        for s in ships:
-            s_lat = s.get("lat")
-            s_lng = s.get("lng")
-            if s_lat is None or s_lng is None:
-                continue
-            if _distance_km(port["lat"], port["lng"], s_lat, s_lng) < 50:
-                nearby_count += 1
-                if (s.get("speed") or 0) < 0.5 and s.get("type") != "military":
-                    waiting_count += 1
-
-        congestion_ratio = waiting_count / nearby_count if nearby_count > 0 else 0
-        if congestion_ratio > 0.6 or waiting_count > 30:
-            congestion_status = "SEVERE"
-            est_dwell = "7+ Days"
-        elif congestion_ratio > 0.4 or waiting_count > 15:
-            congestion_status = "CONGESTED"
-            est_dwell = "3-5 Days"
-        else:
-            congestion_status = "NORMAL"
-            est_dwell = "1-2 Days"
-
-        volume_text = port.get("volume", "")
-        if volume_text:
-            volume_text = f"{volume_text} | LIVE: {nearby_count} (WAITING: {waiting_count})"
-        else:
-            volume_text = f"LIVE: {nearby_count} (WAITING: {waiting_count})"
-
-        dynamic_ports.append({
-            **port,
-            "volume": volume_text,
-            "congestion": congestion_status,
-            "dwell_time": est_dwell,
-        })
-
-    # Dynamic chokepoint analysis
     dynamic_chokepoints = []
-    for choke in CHOKEPOINTS:
-        nearby_count = 0
-        for s in ships:
-            s_lat = s.get("lat")
-            s_lng = s.get("lng")
-            if s_lat is not None and s_lng is not None:
-                if _distance_km(choke["lat"], choke["lng"], s_lat, s_lng) < 100:
+    if include_ports:
+        for port in PORTS:
+            nearby_count = 0
+            waiting_count = 0
+            for s in ships:
+                s_lat = s.get("lat")
+                s_lng = s.get("lng")
+                if s_lat is None or s_lng is None:
+                    continue
+                if _distance_km(port["lat"], port["lng"], s_lat, s_lng) < 50:
                     nearby_count += 1
+                    if (s.get("speed") or 0) < 0.5 and s.get("type") != "military":
+                        waiting_count += 1
 
-        risk = choke["risk"]
-        if nearby_count > 50:
-            risk = "CRITICAL"
-        elif nearby_count > 20 and risk != "CRITICAL":
-            risk = "HIGH"
-        elif nearby_count > 5 and risk == "LOW":
-            risk = "ELEVATED"
+            congestion_ratio = waiting_count / nearby_count if nearby_count > 0 else 0
+            if congestion_ratio > 0.6 or waiting_count > 30:
+                congestion_status = "SEVERE"
+                est_dwell = "7+ Days"
+            elif congestion_ratio > 0.4 or waiting_count > 15:
+                congestion_status = "CONGESTED"
+                est_dwell = "3-5 Days"
+            else:
+                congestion_status = "NORMAL"
+                est_dwell = "1-2 Days"
 
-        dynamic_chokepoints.append({
-            **choke,
-            "traffic": f"{choke['traffic']} | LIVE SHIPS: {nearby_count}",
-            "risk": risk,
-        })
+            volume_text = port.get("volume", "")
+            if volume_text:
+                volume_text = f"{volume_text} | LIVE: {nearby_count} (WAITING: {waiting_count})"
+            else:
+                volume_text = f"LIVE: {nearby_count} (WAITING: {waiting_count})"
+
+            dynamic_ports.append({
+                **port,
+                "volume": volume_text,
+                "congestion": congestion_status,
+                "dwell_time": est_dwell,
+            })
+
+        for choke in CHOKEPOINTS:
+            nearby_count = 0
+            for s in ships:
+                s_lat = s.get("lat")
+                s_lng = s.get("lng")
+                if s_lat is not None and s_lng is not None:
+                    if _distance_km(choke["lat"], choke["lng"], s_lat, s_lng) < 100:
+                        nearby_count += 1
+
+            risk = choke["risk"]
+            if nearby_count > 50:
+                risk = "CRITICAL"
+            elif nearby_count > 20 and risk != "CRITICAL":
+                risk = "HIGH"
+            elif nearby_count > 5 and risk == "LOW":
+                risk = "ELEVATED"
+
+            dynamic_chokepoints.append({
+                **choke,
+                "traffic": f"{choke['traffic']} | LIVE SHIPS: {nearby_count}",
+                "risk": risk,
+            })
 
     cargo_count = sum(1 for s in ships if s.get("type") in ("cargo", "container") or not s.get("type"))
     tanker_count = sum(1 for s in ships if s.get("type") == "tanker")
@@ -251,36 +252,101 @@ async def _build_snapshot() -> dict:
 
 
 @router.get("")
-async def get_maritime_data(type: str | None = None):
+async def get_maritime_data(
+    type: str | None = None,
+    types: str | None = None,
+    include_ships: bool = True,
+    include_ports: bool = True,
+    west: float | None = Query(None, ge=-540, le=540),
+    south: float | None = Query(None, ge=-90, le=90),
+    east: float | None = Query(None, ge=-540, le=540),
+    north: float | None = Query(None, ge=-90, le=90),
+):
     """Fetch live AIS maritime data: vessels, ports, and chokepoints.
     Optionally filter ships by category: 'container' / 'cargo', 'tanker', 'military', 'all'.
     """
     global _snapshot_cache, _snapshot_time
 
-    now = time.time()
-    if _snapshot_cache and now - _snapshot_time < SNAPSHOT_TTL:
-        snapshot = _snapshot_cache
-    else:
-        snapshot = await _build_snapshot()
-        _snapshot_cache = snapshot
-        _snapshot_time = now
+    # Return immediately when every maritime layer is off, without polling AIS.
+    if not include_ships and not include_ports:
+        return Response(
+            content=json.dumps({
+                "ports": [], "chokepoints": [], "ships": [],
+                "total_ports": 0, "total_chokepoints": 0, "total_ships": 0,
+                "category_counts": {"cargo": 0, "tanker": 0, "military": 0},
+                "timestamp": datetime.now(timezone.utc).isoformat(), "filter": "all",
+            }),
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
 
-    if type and type.lower() != "all":
+    now = time.time()
+    cache_key = bool(include_ports)
+    if cache_key in _snapshot_cache and now - _snapshot_time.get(cache_key, 0) < SNAPSHOT_TTL:
+        snapshot = _snapshot_cache[cache_key]
+    else:
+        snapshot = await _build_snapshot(include_ports=include_ports)
+        _snapshot_cache[cache_key] = snapshot
+        _snapshot_time[cache_key] = now
+
+    requested_types = {
+        value.strip().lower() for value in (types or "").split(",") if value.strip()
+    }
+    if requested_types:
+        filtered_ships = [
+            ship for ship in snapshot["ships"]
+            if ("cargo" in requested_types and ship.get("type") in ("cargo", "container"))
+            or ("tanker" in requested_types and ship.get("type") == "tanker")
+            or ("military" in requested_types and ship.get("type") == "military")
+        ]
+    elif type and type.lower() != "all":
         req_type = type.lower()
         if req_type in ("container", "cargo"):
-            filtered_ships = [s for s in snapshot["ships"] if s.get("type") in ("cargo", "container") or not s.get("type")]
+            filtered_ships = [s for s in snapshot["ships"] if s.get("type") in ("cargo", "container")]
         else:
             filtered_ships = [s for s in snapshot["ships"] if s.get("type") == req_type]
-
-        response_data = {
-            **snapshot,
-            "ships": filtered_ships,
-            "total_ships": len(filtered_ships),
-            "filter": req_type,
-        }
-        body = json.dumps(response_data)
     else:
-        body = json.dumps(snapshot)
+        filtered_ships = snapshot["ships"] if include_ships else []
+
+    response_data = {
+        **snapshot,
+        "ships": filtered_ships,
+        "ports": snapshot["ports"] if include_ports else [],
+        "chokepoints": snapshot["chokepoints"] if include_ports else [],
+        "total_ships": len(filtered_ships),
+        "total_ports": len(snapshot["ports"]) if include_ports else 0,
+        "total_chokepoints": len(snapshot["chokepoints"]) if include_ports else 0,
+        "filter": sorted(requested_types) if requested_types else (type or "all"),
+    }
+
+    if None not in (west, south, east, north):
+        def in_view(item: dict) -> bool:
+            try:
+                lat = float(item.get("lat"))
+                lng = float(item.get("lng"))
+            except (TypeError, ValueError):
+                return False
+            if abs(east - west) >= 360:
+                inside_lon = True
+            else:
+                west_norm = ((west + 180) % 360) - 180
+                east_norm = ((east + 180) % 360) - 180
+                inside_lon = west_norm <= lng <= east_norm if west_norm <= east_norm else lng >= west_norm or lng <= east_norm
+            return south <= lat <= north and inside_lon
+
+        response_data["ships"] = [s for s in response_data["ships"] if in_view(s)]
+        response_data["ports"] = [p for p in response_data["ports"] if in_view(p)]
+        response_data["chokepoints"] = [p for p in response_data["chokepoints"] if in_view(p)]
+        response_data["total_ships"] = len(response_data["ships"])
+        response_data["total_ports"] = len(response_data["ports"])
+        response_data["total_chokepoints"] = len(response_data["chokepoints"])
+    response_data["category_counts"] = {
+        "cargo": sum(1 for ship in response_data["ships"] if ship.get("type") in ("cargo", "container")),
+        "tanker": sum(1 for ship in response_data["ships"] if ship.get("type") == "tanker"),
+        "military": sum(1 for ship in response_data["ships"] if ship.get("type") == "military"),
+    }
+
+    body = json.dumps(response_data)
 
     max_age = int(SNAPSHOT_TTL)
     return Response(

@@ -1,3 +1,5 @@
+name: sat_map_backend
+
 services:
   osint:
     build:
@@ -8,8 +10,8 @@ services:
       - "3000"
     environment:
       PORT: 3000
-      OSINT_POLL_ENABLED: "false"
-      OSINT_POLL_LIMIT: 5
+      OSINT_POLL_ENABLED: "true"
+      OSINT_POLL_LIMIT: 30
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

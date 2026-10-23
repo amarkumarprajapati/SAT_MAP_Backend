@@ -21,21 +21,3 @@ CARTO_DARK_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.
 CARTO_TILE_HOST = "cartocdn.com"
 ARCGIS_IMAGERY_TILE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 TERRARIUM_TILE = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-
-NEWS_FEEDS = {
-    "space_news": "https://spacenews.com/feed/",
-    "nasa_releases": "https://www.nasa.gov/news-release/feed/",
-    "gcaptain": "https://gcaptain.com/feed/",
-    "usni": "https://news.usni.org/feed",
-    "defense_news": "https://www.defensenews.com/arc/outboundfeeds/rss/",
-}
-
-NEWS_SOURCES = {
-    "space_news": "https://spacenews.com",
-    "gcaptain": "https://gcaptain.com",
-    "adsb": "https://opendata.adsb.fi",
-    "noaa": "https://www.swpc.noaa.gov",
-    "open_sky": "https://opensky-network.org",
-    "panama_canals": "https://mcanals.com",
-    "nato": "https://ac.nato.int",
-}

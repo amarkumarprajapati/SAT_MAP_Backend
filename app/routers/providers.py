@@ -1,11 +1,15 @@
 """Small, allowlisted proxy endpoints for browser-required map and reference data."""
 
+import asyncio
+import hashlib
 import logging
 import re
+import time
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from ..urls import (
     ARCGIS_IMAGERY_TILE, BIGDATACLOUD_REVERSE, CARTO_DARK_STYLE,
@@ -17,6 +21,10 @@ logger = logging.getLogger("ltmap.providers")
 router = APIRouter(prefix="/api", tags=["providers"])
 
 _client: httpx.AsyncClient | None = None
+_map_style_cache: dict | None = None
+_map_style_cached_at = 0.0
+_map_style_cache_lock = asyncio.Lock()
+MAP_STYLE_CACHE_TTL = 86_400
 
 
 async def open_client() -> None:
@@ -116,7 +124,37 @@ async def reverse_geocode(
         response = await _get(
             f"{BIGDATACLOUD_REVERSE}?latitude={latitude}&longitude={longitude}&localityLanguage=en"
         )
-        return response.json()
+        data = response.json()
+        # BigDataCloud returns ocean names as localities but leaves country and
+        # city empty. Use the best available place label to provide Wikipedia
+        # context for those coordinates as well.
+        wiki_query = next(
+            (
+                data.get(field, "").strip()
+                for field in ("city", "locality", "principalSubdivision", "countryName")
+                if isinstance(data.get(field), str) and data[field].strip()
+            ),
+            "",
+        )
+        if wiki_query:
+            try:
+                wiki_response = await _get(
+                    f"{WIKIPEDIA_SUMMARY}/{quote(wiki_query, safe='')}"
+                )
+                wiki = wiki_response.json()
+                if wiki.get("extract") and wiki.get("type") != "disambiguation":
+                    data["wikipedia"] = {
+                        "title": wiki.get("title", wiki_query),
+                        "extract": wiki["extract"],
+                        "thumbnailUrl": (wiki.get("thumbnail") or {}).get("source"),
+                        "wikiUrl": (wiki.get("content_urls") or {}).get("desktop", {}).get("page")
+                        or f"https://en.wikipedia.org/wiki/{quote(wiki_query, safe='')}",
+                    }
+            except (HTTPException, ValueError, TypeError) as exc:
+                # Geocoding remains useful when Wikipedia has no matching page
+                # or is temporarily unavailable.
+                logger.info("Wikipedia context unavailable for %s: %s", wiki_query, exc)
+        return data
     except HTTPException as exc:
         logger.info("Reverse geocoder unavailable: %s", exc.detail)
         return {
@@ -140,13 +178,42 @@ async def earthquakes():
 
 
 @router.get("/map/style")
-async def map_style():
-    response = await _get(CARTO_DARK_STYLE)
+async def map_style(request: Request):
+    global _map_style_cache, _map_style_cached_at
+
+    now = time.monotonic()
+    if _map_style_cache is None or now - _map_style_cached_at >= MAP_STYLE_CACHE_TTL:
+        async with _map_style_cache_lock:
+            now = time.monotonic()
+            if _map_style_cache is None or now - _map_style_cached_at >= MAP_STYLE_CACHE_TTL:
+                try:
+                    response = await _get(CARTO_DARK_STYLE)
+                    _map_style_cache = response.json()
+                    _map_style_cached_at = time.monotonic()
+                except HTTPException:
+                    # Keep the last known-good style available during a Carto outage.
+                    if _map_style_cache is None:
+                        raise
+
     # Keep {z}/{x}/{y} tile placeholders intact in the style JSON. MapLibre
     # expands them before transformRequest routes each Carto asset through the
     # same-origin /api/map/carto proxy. Encoding whole templates into a query
     # string here prevents MapLibre from recognizing the tile placeholders.
-    return response.json()
+    response = JSONResponse(
+        content=_map_style_cache,
+        headers={"Cache-Control": "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800"},
+    )
+    etag = f'"{hashlib.sha256(response.body).hexdigest()}"'
+    response.headers["ETag"] = etag
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=304,
+            headers={
+                "Cache-Control": response.headers["Cache-Control"],
+                "ETag": etag,
+            },
+        )
+    return response
 
 
 @router.get("/map/carto")

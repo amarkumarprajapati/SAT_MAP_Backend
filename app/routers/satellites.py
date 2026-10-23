@@ -11,11 +11,13 @@ Ported from satellites/route.ts and satellites/orbit/route.ts.
 
 import math
 import logging
+import asyncio
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Query, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..services import tle_cache
 from ..utils.orbit import (
@@ -29,6 +31,52 @@ from ..utils.orbit import (
 logger = logging.getLogger("ltmap.satellites")
 
 router = APIRouter(prefix="/api/satellites", tags=["satellites"])
+
+
+@router.get("/stream")
+async def stream_satellite_position(
+    request: Request,
+    id: str = Query(..., description="NORAD Catalog Number"),
+):
+    """Stream only live position updates for one satellite over SSE."""
+    norad_str = id.strip()
+    if not norad_str.isdigit():
+        return JSONResponse(content={"error": "numeric NORAD id required"}, status_code=400)
+    tle = tle_cache.get_by_norad(norad_str)
+    if not tle:
+        return JSONResponse(
+            content={"error": "not in catalogue", "noradId": norad_str},
+            status_code=404,
+        )
+
+    async def events():
+        while not await request.is_disconnected():
+            telemetry = propagate_telemetry(tle["line1"], tle["line2"])
+            if telemetry:
+                payload = {
+                    "noradId": norad_str,
+                    "position": {
+                        "lat": telemetry["lat"],
+                        "lng": telemetry["lng"],
+                        "altKm": telemetry["alt_km"],
+                        "speedKmS": telemetry["speedKmS"],
+                        "headingDeg": telemetry["headingDeg"],
+                    },
+                }
+                yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 # ── Mission classification by NORAD name keywords ──────────────────────────────
 MISSION_CLASSIFY: dict[str, dict[str, str]] = {
@@ -99,7 +147,14 @@ def _get_category(name: str, mission: str) -> str:
 # ── Satellites Endpoint ─────────────────────────────────────────────────────────
 
 @router.get("")
-async def get_satellites(_cb: Optional[int] = Query(None)):
+async def get_satellites(
+    _cb: Optional[int] = Query(None),
+    categories: str | None = Query(None),
+    west: float | None = Query(None, ge=-540, le=540),
+    south: float | None = Query(None, ge=-90, le=90),
+    east: float | None = Query(None, ge=-540, le=540),
+    north: float | None = Query(None, ge=-90, le=90),
+):
     """
     Fetch all active satellites with positions, categorized missions, and orbits.
     Propagated in real-time via SGP4/SDP4.
@@ -109,17 +164,31 @@ async def get_satellites(_cb: Optional[int] = Query(None)):
 
         now = datetime.now(timezone.utc)
         satellites = []
+        selected_categories = (
+            {category.strip().lower() for category in categories.split(",") if category.strip()}
+            if categories
+            else ALLOWED_CATEGORIES
+        ) & ALLOWED_CATEGORIES
+        use_bounds = None not in (west, south, east, north)
 
         for sat in all_sats:
+            info = _classify_satellite(sat["name"])
+            category = _get_category(sat["name"], info["mission"])
+            if category not in selected_categories:
+                continue
+
             pos = propagate_tle(sat["line1"], sat["line2"], now)
             if not pos:
                 continue
-
-            info = _classify_satellite(sat["name"])
-            category = _get_category(sat["name"], info["mission"])
-
-            if category not in ALLOWED_CATEGORIES:
-                continue
+            if use_bounds:
+                if abs(east - west) >= 360:
+                    inside_lon = True
+                else:
+                    west_norm = ((west + 180) % 360) - 180
+                    east_norm = ((east + 180) % 360) - 180
+                    inside_lon = west_norm <= pos["lng"] <= east_norm if west_norm <= east_norm else pos["lng"] >= west_norm or pos["lng"] <= east_norm
+                if not (south <= pos["lat"] <= north and inside_lon):
+                    continue
 
             norad_id = sat["line1"][2:7].strip()
             satellites.append({
@@ -140,11 +209,7 @@ async def get_satellites(_cb: Optional[int] = Query(None)):
             cat = s["category"]
             category_counts[cat] = category_counts.get(cat, 0) + 1
 
-        cache_ctl = (
-            "no-store, max-age=0"
-            if len(satellites) < 10
-            else "public, s-maxage=120, stale-while-revalidate=300"
-        )
+        cache_ctl = "no-store, max-age=0"
 
         return JSONResponse(
             content={
