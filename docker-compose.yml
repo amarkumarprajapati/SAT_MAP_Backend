@@ -45,13 +45,13 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "${PORT:-8000}:8000"
+      - "${PORT:-8569}:8569"
     env_file:
       - .env
     environment:
       APP_ENV: production
       HOST: 0.0.0.0
-      PORT: 8000
+      PORT: 8569
       RELOAD: "false"
       DATABASE_HOST: db
       DATABASE_PORT: 5432
@@ -69,7 +69,7 @@ services:
       osint:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8569/api/health', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3
